@@ -3,8 +3,10 @@
 import os, re
 from subprocess import *
 
-corelist = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-repeat = 5
+#corelist = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+corelist=[1]
+pagelist = [64000, 128000, 256000, 512000]
+repeat = 2
 
 def warmup():
 	print('Warming up...')
@@ -15,7 +17,7 @@ def warmup():
 def test():
 	print('Begin testing...')
 	pattern = re.compile(r'usec: (\d+)')
-	for n in corelist:
+	for n in pagelist:
 		total = 0
 		for i in xrange(repeat):
 			p = Popen('./mmapbench %d' % n, shell=True, stdout=PIPE)
@@ -23,7 +25,8 @@ def test():
 			output = p.stdout.read().strip()
 			usec = int(pattern.search(output).group(1))
 			total += usec
-		print('Core #%d: %d' % (n, total / repeat))
+		print('Pages #%d: %d' % (n, total / repeat))
 
-warmup()
+#We do not want to warm up. Applications do not warm up, athletes do
+#warmup()
 test()
