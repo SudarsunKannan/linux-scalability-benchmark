@@ -1,6 +1,7 @@
 /**
  * @file   mmap.c
  * @author Wang Yuanxuan <zellux@gmail.com>
+ * @modified by Sudarsun Kannan <sudarsun@gatech.edu>
  * @date   Fri Jan  8 21:23:31 2010
  * 
  * @brief  An implementation of mmap bench mentioned in OSMark paper
@@ -20,36 +21,53 @@
 #include <sys/mman.h>
 #include <stdint.h>
 #include <unistd.h>
-
 #include "config.h"
 #include "bench.h"
 
-#define USEFILE
+#define PAGESIZE 4096
+
+//#define USEFILE
 //#define MNEMOSYNE
+#define PVM
 
 #ifdef USEFILE
-#define MAP_SCM 0x80000
-#define MAP_PERSISTENT MAP_SCM
-#else
-#define MAP_FLAGS MAP_ANONYMOUS | MAP_PRIVATE
-#endif
 
+#define OUTPUT "/mnt/pmfs/share.dat"
+//Mnemosyne specific flags
 #ifdef MNEMOSYNE
-#define MAP_FLAGS MAP_SHARED |MAP_PERSISTENT
+	#define MAP_FLAGS MAP_SHARED |MAP_PERSISTENT
+	//#define MAP_FLAGS MAP_PRIVATE |MAP_PERSISTENT
+	#define MAP_SCM 0x80000
+	#define MAP_PERSISTENT MAP_SCM
 #else
-#define MAP_FLAGS MAP_SHARED
+	//ramfs or pmfs specific flags
+	#define MAP_FLAGS MAP_SHARED 
 #endif
 
-//#define MAP_FLAGS MAP_PRIVATE
-#define __NR_nv_mmap_pgoff     301
+char *filename =OUTPUT;
+#else //PVM case
+	#define __NR_nv_mmap_pgoff     314
+	#define MAP_FLAGS MAP_ANONYMOUS | MAP_PRIVATE
+	#define DISABLE_PERSIST 0
 
-int nbufs = 256000; 
-//int nbufs = 64000;
+	struct nvmap_arg_struct{
+    	unsigned long fd;
+	    unsigned long offset;
+    	int chunk_id;
+	    int proc_id;
+	    int pflags;
+	    int nopersist;
+    	int refcount;
+	};
+#endif
+
+
+//default pages to test
+int nbufs = 64000;
 char *shared_area = NULL;
 int flag[32];
-int ncores = 4;
-//char *filename = "/mnt/pcmfs/share.dat";
-char *filename = "/mnt/pmfs/share.dat";
+//number of threads
+int ncores = 1;
 
 void *
 worker(void *args)
@@ -59,27 +77,14 @@ worker(void *args)
     int i;
 
     affinity_set(id);
-
-    for (i = 0; i < nbufs; i++)
-        ret += shared_area[i *4096];
-    //printf("potato_test: thread#%d done.\n", core);
+    for (i = 0; i < nbufs; i++) {
+	    shared_area[i *PAGESIZE] = ret;
+        ret += shared_area[i *PAGESIZE];
+	}
     return (void *) (long) ret;
 }
 
-
-struct nvmap_arg_struct{
-
-        unsigned long fd;
-        unsigned long offset;
-        int chunk_id;
-        int proc_id;
-        int pflags;
-        int noPersist;
-        int refcount;
-};
-
-
-
+/*create mmap file for filesystem mode*/
 int create_file(char* filename, size_t bytes) {
 
     int fd = -1;
@@ -102,9 +107,7 @@ int create_file(char* filename, size_t bytes) {
         perror("Error writing last byte of the file");
         exit(EXIT_FAILURE);
     }
-    //printf("going to mmap \n");
 	close(fd);
-
 	return 0;
 }
 
@@ -112,15 +115,20 @@ int create_file(char* filename, size_t bytes) {
 int
 main(int argc, char **argv)
 {
-    int i, fd;
+    int i, fd=-1;
     pthread_t tid[32];
     uint64_t start, end, usec;
+
 #ifdef PVM
     struct nvmap_arg_struct a;
+
+	/*PVM needs a chunk and procid*/
     int chunk_id = 120;
     int proc_id = 20;
+
     unsigned long offset = 0;
 #endif
+
     for (i = 0; i < ncores; i++) {
         flag[i] = 0;
     }
@@ -129,8 +137,10 @@ main(int argc, char **argv)
         nbufs = atoi(argv[1]);
     }
 #ifdef USEFILE
-    create_file(filename, (1 + nbufs) * 4096);
-    fd = open(filename, O_RDONLY);
+    create_file(filename, (1 + nbufs) * PAGESIZE);
+	/*easy to change the flags if we are testing 
+	page read performance*/
+    fd = open(filename, O_RDWR);
 #endif
 
 #ifdef PVM
@@ -138,17 +148,22 @@ main(int argc, char **argv)
     a.offset = offset;
     a.chunk_id =chunk_id;
     a.proc_id = proc_id;
+	/*FIXME: What is pflags and persist?*/
     a.pflags = 1;
-    a.noPersist = 0;
-    shared_area = (char *) syscall(__NR_nv_mmap_pgoff, 0,(1 + nbufs) * 4096,  PROT_READ | PROT_WRITE, MAP_PRIVATE| MAP_ANONYMOUS, &a);
+    a.nopersist=DISABLE_PERSIST;
+
+	//pvm's nvmmap function
+    shared_area = (char *) syscall(__NR_nv_mmap_pgoff, 0,(1 + nbufs) * PAGESIZE,  PROT_READ | PROT_WRITE,MAP_FLAGS, &a);
+	//shared_area = mmap(0, (1 + nbufs) * PAGESIZE, PROT_READ | PROT_WRITE, MAP_FLAGS, fd, 0);
+
 #else
-    shared_area = mmap(0, (1 + nbufs) * 4096, PROT_READ, MAP_FLAGS, fd, 0);
+    shared_area = mmap(0, (1 + nbufs) * PAGESIZE, PROT_READ | PROT_WRITE, MAP_FLAGS, fd, 0);
 #endif
     if (shared_area == MAP_FAILED) {
             perror("Error mmapping the file");
             exit(EXIT_FAILURE);
      }   
-     //printf("map %lu\n", (unsigned long)shared_area);
+
     start = read_tsc();
     for (i = 0; i < ncores; i++) {
         pthread_create(&tid[i], NULL, worker, (void *) (long) i);
@@ -163,5 +178,6 @@ main(int argc, char **argv)
     printf("usec: %ld\t\n", usec);
 
     close(fd);
+
     return 0;
 }
